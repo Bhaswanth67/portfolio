@@ -1,0 +1,1 @@
+A responsive personal portfolio website built with HTML, CSS, and JavaScript, showcasing my skills, experience, projects, and certifications with an interactive sidebar, filterable certificate gallery, and a functional contact form integrated with EmailJS.

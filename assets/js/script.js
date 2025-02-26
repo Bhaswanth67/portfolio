@@ -195,7 +195,7 @@ function SendMail(event){
     message: message,
   }
 
-  emailjs.send("service_5bvm5fc", "template_57rl6su", params)
+  emailjs.send("service_5bwsre", "template_57bswe", params)
     .then(function(response) {
       showNotification("Email sent successfully!", false);
       setTimeout(function() {

@@ -1,0 +1,1064 @@
+
+--- project_template/project_template/src/main/java/com/matrimonyapplication/service/PartnerPreferencesService.java ---
+
+package com.matrimonyapplication.service;
+
+import com.matrimonyapplication.dto.PartnerPreferencesDto;
+
+public interface PartnerPreferencesService {
+	PartnerPreferencesDto createPartnerPreferences(Long userId, PartnerPreferencesDto partnerPreferencesDto);
+
+	PartnerPreferencesDto getPartnerPreferences(Long userId);
+
+	PartnerPreferencesDto updatePartnerPreferences(Long userId, PartnerPreferencesDto partnerPreferencesDto);
+
+	void deletePartnerPreferences(Long userId);
+}
+
+--- project_template/project_template/src/main/java/com/matrimonyapplication/service/impl/JwtService.java ---
+
+package com.matrimonyapplication.service.impl;
+
+import java.security.Key;
+import java.util.Date;
+import java.util.HashMap;
+import java.util.Map;
+import java.util.function.Function;
+
+import org.springframework.beans.factory.annotation.Value;
+import org.springframework.security.core.userdetails.UserDetails;
+import org.springframework.stereotype.Component;
+
+import io.jsonwebtoken.Claims;
+import io.jsonwebtoken.Jwts;
+import io.jsonwebtoken.SignatureAlgorithm;
+import io.jsonwebtoken.io.Decoders;
+import io.jsonwebtoken.security.Keys;
+
+@Component
+public class JwtService {
+
+    @Value("${jwt.secret}")
+    private String secret;
+
+    public String generateToken(String userName) {
+        Map<String, Object> claims = new HashMap<>();
+        return createToken(claims, userName);
+    }
+
+    private String createToken(Map<String, Object> claims, String userName) {
+        return Jwts.builder()
+                .setClaims(claims)
+                .setSubject(userName)
+                .setIssuedAt(new Date(System.currentTimeMillis()))
+                .setExpiration(new Date(System.currentTimeMillis() + 1000 * 60 * 30)) // 30 min
+                .signWith(getSignKey(), SignatureAlgorithm.HS256)
+                .compact();
+    }
+
+    private Key getSignKey() {
+        byte[] keyBytes = Decoders.BASE64.decode(secret);
+        return Keys.hmacShaKeyFor(keyBytes);
+    }
+
+    public String extractUsername(String token) {
+        return extractClaim(token, Claims::getSubject);
+    }
+
+    public Date extractExpiration(String token) {
+        return extractClaim(token, Claims::getExpiration);
+    }
+
+    public <T> T extractClaim(String token, Function<Claims, T> claimsResolver) {
+        final Claims claims = extractAllClaims(token);
+        return claimsResolver.apply(claims);
+    }
+
+    private Claims extractAllClaims(String token) {
+        return Jwts
+                .parserBuilder()
+                .setSigningKey(getSignKey())
+                .build()
+                .parseClaimsJws(token)
+                .getBody();
+    }
+
+    private Boolean isTokenExpired(String token) {
+        return extractExpiration(token).before(new Date());
+    }
+
+    public Boolean validateToken(String token, UserDetails userDetails) {
+        final String username = extractUsername(token);
+        return (username.equals(userDetails.getUsername()) && !isTokenExpired(token));
+    }
+}
+
+--- project_template/project_template/src/main/java/com/matrimonyapplication/service/impl/PartnerPreferencesServiceImpl.java ---
+
+package com.matrimonyapplication.service.impl;
+
+import org.modelmapper.ModelMapper;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.stereotype.Service;
+
+import com.matrimonyapplication.dto.PartnerPreferencesDto;
+import com.matrimonyapplication.entity.PartnerPreferences;
+import com.matrimonyapplication.entity.User;
+import com.matrimonyapplication.repository.PartnerPreferencesRepository;
+import com.matrimonyapplication.repository.UserRepository;
+import com.matrimonyapplication.service.PartnerPreferencesService;
+
+@Service
+public class PartnerPreferencesServiceImpl implements PartnerPreferencesService {
+
+    @Autowired
+    private PartnerPreferencesRepository partnerPreferencesRepository;
+
+    @Autowired
+    private UserRepository userRepository;
+
+    @Autowired
+    private ModelMapper modelMapper;
+
+    @Override
+    public PartnerPreferencesDto createPartnerPreferences(Long userId, PartnerPreferencesDto partnerPreferencesDto) {
+        User user = userRepository.findById(userId)
+                .orElseThrow(() -> new RuntimeException("User not found."));
+        PartnerPreferences preferences = modelMapper.map(partnerPreferencesDto, PartnerPreferences.class);
+        preferences.setUser(user);
+        preferences = partnerPreferencesRepository.save(preferences);
+        partnerPreferencesDto.setId(preferences.getId());
+        return partnerPreferencesDto;
+    }
+
+    @Override
+    public PartnerPreferencesDto getPartnerPreferences(Long userId) {
+        PartnerPreferences preferences = partnerPreferencesRepository.findByUserId(userId);
+        if (preferences == null) {
+            throw new RuntimeException("Partner Preferences not found.");
+        }
+        return modelMapper.map(preferences, PartnerPreferencesDto.class);
+    }
+
+    @Override
+    public PartnerPreferencesDto updatePartnerPreferences(Long userId, PartnerPreferencesDto partnerPreferencesDto) {
+        PartnerPreferences preferences = partnerPreferencesRepository.findByUserId(userId);
+        if (preferences == null) {
+            throw new RuntimeException("Partner Preferences not found.");
+        }
+        preferences.setPreferredAgeStart(partnerPreferencesDto.getPreferredAgeStart());
+        preferences.setPreferredAgeEnd(partnerPreferencesDto.getPreferredAgeEnd());
+        preferences.setPreferredGender(partnerPreferencesDto.getPreferredGender());
+        partnerPreferencesRepository.save(preferences);
+        return modelMapper.map(preferences, PartnerPreferencesDto.class);
+    }
+
+    @Override
+    public void deletePartnerPreferences(Long userId) {
+        PartnerPreferences preferences = partnerPreferencesRepository.findByUserId(userId);
+        if (preferences != null) {
+            partnerPreferencesRepository.delete(preferences);
+        }
+    }
+}
+
+--- project_template/project_template/src/main/java/com/matrimonyapplication/service/impl/UserInfoDetails.java ---
+
+package com.matrimonyapplication.service.impl;
+
+import java.util.Arrays;
+import java.util.Collection;
+import java.util.List;
+import java.util.stream.Collectors;
+
+import org.springframework.security.core.GrantedAuthority;
+import org.springframework.security.core.authority.SimpleGrantedAuthority;
+import org.springframework.security.core.userdetails.UserDetails;
+
+import com.matrimonyapplication.entity.User;
+
+public class UserInfoDetails implements UserDetails {
+
+    private String name;
+    private String password;
+    private List<GrantedAuthority> authorities;
+
+    public UserInfoDetails(User user) {
+        name = user.getName();
+        password = user.getPassword();
+        authorities = Arrays.stream(user.getRoles().split(","))
+                .map(SimpleGrantedAuthority::new)
+                .collect(Collectors.toList());
+    }
+
+    @Override
+    public Collection<? extends GrantedAuthority> getAuthorities() {
+        return authorities;
+    }
+
+    @Override
+    public String getPassword() {
+        return password;
+    }
+
+    @Override
+    public String getUsername() {
+        return name;
+    }
+
+    @Override
+    public boolean isAccountNonExpired() {
+        return true;
+    }
+
+    @Override
+    public boolean isAccountNonLocked() {
+        return true;
+    }
+
+    @Override
+    public boolean isCredentialsNonExpired() {
+        return true;
+    }
+
+    @Override
+    public boolean isEnabled() {
+        return true;
+    }
+}
+
+--- project_template/project_template/src/main/java/com/matrimonyapplication/service/impl/UserServiceImpl.java ---
+
+package com.matrimonyapplication.service.impl;
+
+import java.time.LocalDate;
+import java.time.Period;
+import java.util.List;
+import java.util.Optional;
+import java.util.stream.Collectors;
+
+import org.modelmapper.ModelMapper;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.security.core.userdetails.UserDetails;
+import org.springframework.security.core.userdetails.UserDetailsService;
+import org.springframework.security.core.userdetails.UsernameNotFoundException;
+import org.springframework.security.crypto.bcrypt.BCryptPasswordEncoder;
+import org.springframework.stereotype.Service;
+
+import com.matrimonyapplication.dto.UserDto;
+import com.matrimonyapplication.entity.PartnerPreferences;
+import com.matrimonyapplication.entity.User;
+import com.matrimonyapplication.repository.PartnerPreferencesRepository;
+import com.matrimonyapplication.repository.UserRepository;
+
+@Service
+public class UserServiceImpl implements UserDetailsService {
+
+    @Autowired
+    private UserRepository userRepository;
+
+    @Autowired
+    private PartnerPreferencesRepository partnerPreferencesRepository;
+
+    @Autowired
+    private ModelMapper modelMapper;
+
+    @Autowired
+    private BCryptPasswordEncoder passwordEncoder;
+
+    @Override
+    public UserDetails loadUserByUsername(String username) throws UsernameNotFoundException {
+        Optional<User> user = userRepository.findByName(username);
+        return user.map(UserInfoDetails::new)
+                .orElseThrow(() -> new UsernameNotFoundException("User not found"));
+    }
+
+    public UserDto authenticateUser(String email, String password) {
+        throw new UnsupportedOperationException("Authentication logic needs to be implemented");
+    }
+
+    public UserDto getUserProfile(Long userId) {
+        User user = userRepository.findById(userId)
+                .orElseThrow(() -> new RuntimeException("User not found."));
+        return modelMapper.map(user, UserDto.class);
+    }
+
+    public UserDto updateUserProfile(Long userId, UserDto userDto) {
+        User user = userRepository.findById(userId)
+                .orElseThrow(() -> new RuntimeException("User not found."));
+        user.setName(userDto.getName());
+        user.setDob(userDto.getDob());
+        user.setGender(userDto.getGender());
+        // Update other fields if needed, but password/email/roles not updated here as per spec
+        userRepository.save(user);
+        return modelMapper.map(user, UserDto.class);
+    }
+
+    public void deleteUser(Long userId) {
+        userRepository.deleteById(userId);
+    }
+
+    public List<UserDto> findMatches(Long userId) {
+        PartnerPreferences preferences = partnerPreferencesRepository.findByUserId(userId);
+        if (preferences == null) {
+            throw new RuntimeException("Partner Preferences not found.");
+        }
+
+        List<User> allUsers = userRepository.findAll();
+        return allUsers.stream()
+                .filter(u -> !u.getId().equals(userId)) // Exclude self
+                .filter(u -> u.getGender().equals(preferences.getPreferredGender()))
+                .filter(u -> {
+                    LocalDate dob = LocalDate.ofInstant(u.getDob().toInstant(), java.time.ZoneId.systemDefault());
+                    int age = Period.between(dob, LocalDate.now()).getYears();
+                    return age >= preferences.getPreferredAgeStart() && age <= preferences.getPreferredAgeEnd();
+                })
+                .map(u -> modelMapper.map(u, UserDto.class))
+                .collect(Collectors.toList());
+    }
+
+    public UserDto registerUser(UserDto userDto) {
+        User user = modelMapper.map(userDto, User.class);
+        user.setPassword(passwordEncoder.encode(userDto.getPassword()));
+        user.setRoles("USER"); // Default role
+        userRepository.save(user);
+        return modelMapper.map(user, UserDto.class);
+    }
+}
+
+--- project_template/project_template/src/main/java/com/matrimonyapplication/repository/PartnerPreferencesRepository.java ---
+
+package com.matrimonyapplication.repository;
+
+import org.springframework.data.jpa.repository.JpaRepository;
+import org.springframework.stereotype.Repository;
+
+import com.matrimonyapplication.entity.PartnerPreferences;
+
+@Repository
+public interface PartnerPreferencesRepository extends JpaRepository<PartnerPreferences, Long> {
+	PartnerPreferences findByUserId(Long userId);
+}
+
+--- project_template/project_template/src/main/java/com/matrimonyapplication/repository/UserRepository.java ---
+
+package com.matrimonyapplication.repository;
+
+import java.util.Optional;
+
+import org.springframework.data.jpa.repository.JpaRepository;
+import org.springframework.stereotype.Repository;
+
+import com.matrimonyapplication.entity.User;
+
+@Repository
+public interface UserRepository extends JpaRepository<User, Long> {
+	User findByEmail(String email);
+
+	Optional<User> findByName(String username);
+}
+
+--- project_template/project_template/src/main/java/com/matrimonyapplication/filter/JwtAuthFilter.java ---
+
+package com.matrimonyapplication.filter;
+
+import java.io.IOException;
+
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
+import org.springframework.security.core.context.SecurityContextHolder;
+import org.springframework.security.core.userdetails.UserDetails;
+import org.springframework.security.web.authentication.WebAuthenticationDetailsSource;
+import org.springframework.stereotype.Component;
+import org.springframework.web.filter.OncePerRequestFilter;
+
+import com.matrimonyapplication.service.impl.JwtService;
+import com.matrimonyapplication.service.impl.UserServiceImpl;
+
+import jakarta.servlet.FilterChain;
+import jakarta.servlet.ServletException;
+import jakarta.servlet.http.HttpServletRequest;
+import jakarta.servlet.http.HttpServletResponse;
+
+@Component
+public class JwtAuthFilter extends OncePerRequestFilter {
+
+    @Autowired
+    private JwtService jwtService;
+
+    @Autowired
+    private UserServiceImpl userDetailsService;
+
+    @Override
+    protected void doFilterInternal(HttpServletRequest request, HttpServletResponse response, FilterChain filterChain)
+            throws ServletException, IOException {
+        String authHeader = request.getHeader("Authorization");
+        String token = null;
+        String username = null;
+        if (authHeader != null && authHeader.startsWith("Bearer ")) {
+            token = authHeader.substring(7);
+            username = jwtService.extractUsername(token);
+        }
+
+        if (username != null && SecurityContextHolder.getContext().getAuthentication() == null) {
+            UserDetails userDetails = userDetailsService.loadUserByUsername(username);
+            if (jwtService.validateToken(token, userDetails)) {
+                UsernamePasswordAuthenticationToken authToken = new UsernamePasswordAuthenticationToken(userDetails, null, userDetails.getAuthorities());
+                authToken.setDetails(new WebAuthenticationDetailsSource().buildDetails(request));
+                SecurityContextHolder.getContext().setAuthentication(authToken);
+            }
+        }
+        filterChain.doFilter(request, response);
+    }
+}
+
+--- project_template/project_template/src/main/java/com/matrimonyapplication/exception/ErrorResponse.java ---
+
+package com.matrimonyapplication.exception;
+
+public class ErrorResponse {
+
+	private int status;
+	private String message;
+
+	public ErrorResponse(int status, String message) {
+		this.status = status;
+		this.message = message;
+	}
+
+	public int getStatus() {
+		return status;
+	}
+
+	public String getMessage() {
+		return message;
+	}
+
+}
+
+
+--- project_template/project_template/src/main/java/com/matrimonyapplication/exception/ResourceNotFoundException.java ---
+
+package com.matrimonyapplication.exception;
+
+import org.springframework.http.HttpStatus;
+import org.springframework.web.bind.annotation.ResponseStatus;
+
+@ResponseStatus(HttpStatus.NOT_FOUND)
+public class ResourceNotFoundException extends RuntimeException {
+	public ResourceNotFoundException(String message) {
+		super(message);
+	}
+}
+
+
+--- project_template/project_template/src/main/java/com/matrimonyapplication/exception/RestExceptionHandler.java ---
+
+package com.matrimonyapplication.exception;
+
+import org.springframework.http.HttpStatus;
+import org.springframework.web.bind.annotation.ExceptionHandler;
+import org.springframework.web.bind.annotation.ResponseStatus;
+import org.springframework.web.bind.annotation.RestControllerAdvice;
+
+@RestControllerAdvice
+public class RestExceptionHandler {
+
+	@ExceptionHandler(ResourceNotFoundException.class)
+	@ResponseStatus(HttpStatus.NOT_FOUND)
+	public ErrorResponse handleResourceNotFoundException(ResourceNotFoundException ex) {
+		return new ErrorResponse(HttpStatus.NOT_FOUND.value(), ex.getMessage());
+	}
+
+	// Other exception handlers...
+}
+
+
+--- project_template/project_template/src/main/java/com/matrimonyapplication/entity/AuthRequest.java ---
+
+package com.matrimonyapplication.entity;
+
+public class AuthRequest {
+
+	private String email;
+	private String password;
+
+	public String getEmail() {
+		return email;
+	}
+
+	public void setEmail(String email) {
+		this.email = email;
+	}
+
+	public String getPassword() {
+		return password;
+	}
+
+	public void setPassword(String password) {
+		this.password = password;
+	}
+
+	public AuthRequest(String email, String password) {
+		super();
+		this.email = email;
+		this.password = password;
+	}
+
+	public AuthRequest() {
+		super();
+	}
+}
+
+--- project_template/project_template/src/main/java/com/matrimonyapplication/entity/PartnerPreferences.java ---
+
+package com.matrimonyapplication.entity;
+
+import jakarta.persistence.Column;
+import jakarta.persistence.Entity;
+import jakarta.persistence.GeneratedValue;
+import jakarta.persistence.GenerationType;
+import jakarta.persistence.Id;
+import jakarta.persistence.JoinColumn;
+import jakarta.persistence.ManyToOne;
+import jakarta.persistence.Table;
+
+@Entity
+@Table(name = "partner_preferences")
+public class PartnerPreferences {
+    @Id
+    @GeneratedValue(strategy = GenerationType.IDENTITY)
+    private Long id;
+
+    @Column(name = "preferred_age_start")
+    private Integer preferredAgeStart;
+
+    @Column(name = "preferred_age_end")
+    private Integer preferredAgeEnd;
+
+    @Column(name = "preferred_gender")
+    private String preferredGender;
+
+    @ManyToOne
+    @JoinColumn(name = "user_id")
+    private User user;
+
+
+	public Long getId() {
+		return id;
+	}
+
+	public void setId(Long id) {
+		this.id = id;
+	}
+
+	public Integer getPreferredAgeStart() {
+		return preferredAgeStart;
+	}
+
+	public void setPreferredAgeStart(Integer preferredAgeStart) {
+		this.preferredAgeStart = preferredAgeStart;
+	}
+
+	public Integer getPreferredAgeEnd() {
+		return preferredAgeEnd;
+	}
+
+	public void setPreferredAgeEnd(Integer preferredAgeEnd) {
+		this.preferredAgeEnd = preferredAgeEnd;
+	}
+
+	public String getPreferredGender() {
+		return preferredGender;
+	}
+
+	public void setPreferredGender(String preferredGender) {
+		this.preferredGender = preferredGender;
+	}
+
+	public User getUser() {
+		return user;
+	}
+
+	public void setUser(User user) {
+		this.user = user;
+	}
+}
+
+--- project_template/project_template/src/main/java/com/matrimonyapplication/entity/User.java ---
+
+package com.matrimonyapplication.entity;
+
+import java.util.Date;
+
+import jakarta.persistence.Column;
+import jakarta.persistence.Entity;
+import jakarta.persistence.GeneratedValue;
+import jakarta.persistence.GenerationType;
+import jakarta.persistence.Id;
+import jakarta.persistence.Table;
+
+@Entity
+@Table(name = "users")
+public class User {
+
+    @Id
+    @GeneratedValue(strategy = GenerationType.IDENTITY)
+    private Long id;
+
+    @Column(nullable = false)
+    private String name;
+
+    @Column(nullable = false)
+    private String email;
+
+    @Column(nullable = false)
+    private String password;
+
+    @Column(nullable = false)
+    private String roles;
+
+    @Column(nullable = false)
+    private Date dob;
+
+    @Column(nullable = false)
+    private String gender;
+
+    // Constructors, getters, setters, toString as in template
+
+
+	public Long getId() {
+		return id;
+	}
+
+	public void setId(Long id) {
+		this.id = id;
+	}
+
+	public String getName() {
+		return name;
+	}
+
+	public void setName(String name) {
+		this.name = name;
+	}
+
+	public String getEmail() {
+		return email;
+	}
+
+	public void setEmail(String email) {
+		this.email = email;
+	}
+
+	public String getPassword() {
+		return password;
+	}
+
+	public void setPassword(String password) {
+		this.password = password;
+	}
+
+	public String getRoles() {
+		return roles;
+	}
+
+	public void setRoles(String roles) {
+		this.roles = roles;
+	}
+
+	public Date getDob() {
+		return dob;
+	}
+
+	public void setDob(Date dob) {
+		this.dob = dob;
+	}
+
+	public String getGender() {
+		return gender;
+	}
+
+	public void setGender(String gender) {
+		this.gender = gender;
+	}
+
+	@Override
+	public String toString() {
+		return "User [id=" + id + ", name=" + name + ", email=" + email + ", password=" + password + ", roles=" + roles
+				+ ", dob=" + dob + ", gender=" + gender + "]";
+	}
+}
+
+
+--- project_template/project_template/src/main/java/com/matrimonyapplication/dto/PartnerPreferencesDto.java ---
+
+package com.matrimonyapplication.dto;
+
+public class PartnerPreferencesDto {
+
+    private Long id;
+    private Integer preferredAgeStart;
+    private Integer preferredAgeEnd;
+    private String preferredGender;
+    private Long userId;
+
+    public PartnerPreferencesDto() {
+    }
+
+    public Long getId() {
+        return id;
+    }
+
+    public void setId(Long id) {
+        this.id = id;
+    }
+
+    public Integer getPreferredAgeStart() {
+        return preferredAgeStart;
+    }
+
+    public void setPreferredAgeStart(Integer preferredAgeStart) {
+        this.preferredAgeStart = preferredAgeStart;
+    }
+
+    public Integer getPreferredAgeEnd() {
+        return preferredAgeEnd;
+    }
+
+    public void setPreferredAgeEnd(Integer preferredAgeEnd) {
+        this.preferredAgeEnd = preferredAgeEnd;
+    }
+
+    public String getPreferredGender() {
+        return preferredGender;
+    }
+
+    public void setPreferredGender(String preferredGender) {
+        this.preferredGender = preferredGender;
+    }
+
+    public Long getUserId() {
+        return userId;
+    }
+
+    public void setUserId(Long userId) {
+        this.userId = userId;
+    }
+}
+
+--- project_template/project_template/src/main/java/com/matrimonyapplication/dto/UserDto.java ---
+
+package com.matrimonyapplication.dto;
+
+import java.util.Date;
+
+import jakarta.validation.constraints.Email;
+import jakarta.validation.constraints.NotBlank;
+
+public class UserDto {
+
+    private Long id;
+
+    @NotBlank(message = "Name should not be blank")
+    private String name;
+
+    @NotBlank(message = "Email should not be blank")
+    @Email(message = "Email must be a valid email address")
+    private String email;
+
+    @NotBlank(message = "Password should not be blank")
+    private String password;
+
+    private String roles;
+
+    private Date dob;
+
+    @NotBlank(message = "Gender should not be blank")
+    private String gender;
+
+
+
+	public UserDto() {
+	}
+
+	public UserDto(Long id, String name, String email, String password, String roles, Date dob, String gender) {
+		super();
+		this.id = id;
+		this.name = name;
+		this.email = email;
+		this.password = password;
+		this.roles = roles;
+		this.dob = dob;
+		this.gender = gender;
+	}
+
+	public Long getId() {
+		return id;
+	}
+
+	public void setId(Long id) {
+		this.id = id;
+	}
+
+	public String getName() {
+		return name;
+	}
+
+	public void setName(String name) {
+		this.name = name;
+	}
+
+	public String getEmail() {
+		return email;
+	}
+
+	public void setEmail(String email) {
+		this.email = email;
+	}
+
+	public String getPassword() {
+		return password;
+	}
+
+	public void setPassword(String password) {
+		this.password = password;
+	}
+
+	public String getRoles() {
+		return roles;
+	}
+
+	public void setRoles(String roles) {
+		this.roles = roles;
+	}
+
+	public Date getDob() {
+		return dob;
+	}
+
+	public void setDob(Date dob) {
+		this.dob = dob;
+	}
+
+	public String getGender() {
+		return gender;
+	}
+
+	public void setGender(String gender) {
+		this.gender = gender;
+	}
+
+	@Override
+	public String toString() {
+		return "UserDto [id=" + id + ", name=" + name + ", email=" + email + ", password=" + password + ", roles="
+				+ roles + ", dob=" + dob + ", gender=" + gender + "]";
+	}
+}
+
+--- project_template/project_template/src/main/java/com/matrimonyapplication/controller/PartnerPreferencesController.java ---
+
+package com.matrimonyapplication.controller;
+
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.http.ResponseEntity;
+import org.springframework.web.bind.annotation.DeleteMapping;
+import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.PutMapping;
+import org.springframework.web.bind.annotation.RequestBody;
+import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RequestParam;
+import org.springframework.web.bind.annotation.RestController;
+
+import com.matrimonyapplication.dto.PartnerPreferencesDto;
+import com.matrimonyapplication.service.PartnerPreferencesService;
+
+@RestController
+@RequestMapping("/api/preferences")
+public class PartnerPreferencesController {
+
+    @Autowired
+    private PartnerPreferencesService partnerPreferencesService;
+
+    @PostMapping
+    public ResponseEntity<PartnerPreferencesDto> createPreferences(
+            @RequestBody PartnerPreferencesDto partnerPreferencesDto, @RequestParam Long userId) {
+        PartnerPreferencesDto created = partnerPreferencesService.createPartnerPreferences(userId, partnerPreferencesDto);
+        return ResponseEntity.ok(created);
+    }
+
+    @GetMapping
+    public ResponseEntity<PartnerPreferencesDto> getPreferences(@RequestParam Long userId) {
+        PartnerPreferencesDto preferences = partnerPreferencesService.getPartnerPreferences(userId);
+        return ResponseEntity.ok(preferences);
+    }
+
+    @PutMapping
+    public ResponseEntity<PartnerPreferencesDto> updatePreferences(@RequestParam Long userId,
+            @RequestBody PartnerPreferencesDto partnerPreferencesDto) {
+        PartnerPreferencesDto updated = partnerPreferencesService.updatePartnerPreferences(userId, partnerPreferencesDto);
+        return ResponseEntity.ok(updated);
+    }
+
+    @DeleteMapping
+    public ResponseEntity<?> deletePreferences(@RequestParam Long userId) {
+        partnerPreferencesService.deletePartnerPreferences(userId);
+        return ResponseEntity.ok().build();
+    }
+}
+
+--- project_template/project_template/src/main/java/com/matrimonyapplication/controller/UserController.java ---
+
+package com.matrimonyapplication.controller;
+
+import java.util.List;
+
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.http.ResponseEntity;
+import org.springframework.security.authentication.AuthenticationManager;
+import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
+import org.springframework.security.core.Authentication;
+import org.springframework.security.core.userdetails.UsernameNotFoundException;
+import org.springframework.web.bind.annotation.DeleteMapping;
+import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.PathVariable;
+import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.PutMapping;
+import org.springframework.web.bind.annotation.RequestBody;
+import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RequestParam;
+import org.springframework.web.bind.annotation.RestController;
+
+import com.matrimonyapplication.dto.UserDto;
+import com.matrimonyapplication.entity.AuthRequest;
+import com.matrimonyapplication.repository.UserRepository;
+import com.matrimonyapplication.service.impl.JwtService;
+import com.matrimonyapplication.service.impl.UserServiceImpl;
+
+@RestController
+@RequestMapping("/api/users")
+public class UserController {
+
+    @Autowired
+    private UserRepository userRepository;
+
+    @Autowired
+    private UserServiceImpl userService;
+
+    @Autowired
+    private JwtService jwtService;
+
+    @Autowired
+    private AuthenticationManager authenticationManager;
+
+    @PostMapping("/login")
+    public String authenticateAndGetToken(@RequestBody AuthRequest authRequest) {
+        Authentication authentication = authenticationManager.authenticate(
+                new UsernamePasswordAuthenticationToken(authRequest.getEmail(), authRequest.getPassword()));
+        if (authentication.isAuthenticated()) {
+            return jwtService.generateToken(authRequest.getEmail());
+        } else {
+            throw new UsernameNotFoundException("invalid user request !");
+        }
+    }
+
+    @PostMapping("/register")
+    public ResponseEntity<UserDto> registerUser(@RequestBody UserDto userDto) {
+        UserDto registeredUser = userService.registerUser(userDto);
+        return ResponseEntity.ok(registeredUser);
+    }
+
+    @GetMapping("/profile/{userId}")
+    public ResponseEntity<UserDto> getUserProfile(@PathVariable Long userId) {
+        UserDto userDto = userService.getUserProfile(userId);
+        return ResponseEntity.ok(userDto);
+    }
+
+    @PutMapping("/profile")
+    public ResponseEntity<UserDto> updateUserProfile(@RequestParam Long userId, @RequestBody UserDto userDto) {
+        UserDto updatedUser = userService.updateUserProfile(userId, userDto);
+        return ResponseEntity.ok(updatedUser);
+    }
+
+    @DeleteMapping
+    public ResponseEntity<?> deleteUser(@RequestParam Long userId) {
+        userService.deleteUser(userId);
+        return ResponseEntity.ok().build();
+    }
+
+    @GetMapping("/matches")
+    public ResponseEntity<List<UserDto>> findMatches(@RequestParam Long userId) {
+        List<UserDto> matches = userService.findMatches(userId);
+        return ResponseEntity.ok(matches);
+    }
+}
+
+--- project_template/project_template/src/main/java/com/matrimonyapplication/config/SecurityConfig.java ---
+
+package com.matrimonyapplication.config;
+
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Configuration;
+import org.springframework.security.authentication.AuthenticationManager;
+import org.springframework.security.authentication.AuthenticationProvider;
+import org.springframework.security.authentication.dao.DaoAuthenticationProvider;
+import org.springframework.security.config.annotation.authentication.configuration.AuthenticationConfiguration;
+import org.springframework.security.config.annotation.method.configuration.EnableMethodSecurity;
+import org.springframework.security.config.annotation.web.builders.HttpSecurity;
+import org.springframework.security.config.annotation.web.configuration.EnableWebSecurity;
+import org.springframework.security.config.http.SessionCreationPolicy;
+import org.springframework.security.core.userdetails.UserDetailsService;
+import org.springframework.security.crypto.bcrypt.BCryptPasswordEncoder;
+import org.springframework.security.crypto.password.PasswordEncoder;
+import org.springframework.security.web.SecurityFilterChain;
+import org.springframework.security.web.authentication.UsernamePasswordAuthenticationFilter;
+
+import com.matrimonyapplication.filter.JwtAuthFilter;
+import com.matrimonyapplication.service.impl.UserServiceImpl;
+
+@Configuration
+@EnableWebSecurity
+@EnableMethodSecurity
+public class SecurityConfig {
+
+    @Autowired
+    private JwtAuthFilter authFilter;
+
+    @Bean
+    public UserDetailsService userDetailsService() {
+        return new UserServiceImpl();
+    }
+
+    @Bean
+    public SecurityFilterChain securityFilterChain(HttpSecurity http) throws Exception {
+        http.csrf(csrf -> csrf.disable())
+                .authorizeHttpRequests(auth -> auth
+                        .requestMatchers("/api/users/register", "/api/users/login").permitAll()
+                        .requestMatchers("/api/preferences/**").authenticated()
+                        .anyRequest().authenticated())
+                .sessionManagement(session -> session.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
+                .authenticationProvider(authenticationProvider())
+                .addFilterBefore(authFilter, UsernamePasswordAuthenticationFilter.class);
+        return http.build();
+    }
+
+    @Bean
+    public PasswordEncoder passwordEncoder() {
+        return new BCryptPasswordEncoder();
+    }
+
+    @Bean
+    public AuthenticationProvider authenticationProvider() {
+        DaoAuthenticationProvider authenticationProvider = new DaoAuthenticationProvider();
+        authenticationProvider.setUserDetailsService(userDetailsService());
+        authenticationProvider.setPasswordEncoder(passwordEncoder());
+        return authenticationProvider;
+    }
+
+    @Bean
+    public AuthenticationManager authenticationManager(AuthenticationConfiguration config) throws Exception {
+        return config.getAuthenticationManager();
+    }
+}
